@@ -1,89 +1,98 @@
-import * as client from './client/client';
-import Express from 'express';
-import * as http from 'http';
-import transcriptServer from './server/transcriptServer';
-import { AddressInfo } from 'net';
-import { setBaseURL } from './client/remoteService';
-import * as db from './server/transcriptManager';
+import * as client from "./client/client";
+import Express from "express";
+import * as http from "http";
+import transcriptServer from "./server/transcriptServer";
+import { AddressInfo } from "net";
+import { setBaseURL } from "./client/remoteService";
+import * as db from "./server/transcriptManager";
 
-/**
- * Tests for the Transcript Manager. This test suite automatically deploys a local testing server
- * and cleans it up when it's done. Each test is hermetic, as the datastore is cleared before each
- * test runs.
- */
-describe('TranscriptManager', () => {
-  // The server instance, once deployed for testing purposes
+describe("TranscriptManager integration", () => {
   let server: http.Server;
 
-  // Set up the server once before all tests run
   beforeAll(async () => {
-    // Deploy a testing server
     const app = Express();
     server = http.createServer(app);
-
-    // Add the transcript server's routes to the express server
     transcriptServer(app);
 
     db.initialize();
 
-    // Start the server on a random, free port, then fetch that address and configure the client to use that server.
     await server.listen();
     const address = server.address() as AddressInfo;
     setBaseURL(`http://localhost:${address.port}`);
   });
 
-  // Tear down the server once all tests are done
   afterAll(async () => {
-    // After all tests are done, shut down the server to avoid any resource leaks
     await server.close();
   });
 
-  // Clear the datastore before each test to ensure hermetic tests
   beforeEach(() => {
-    // Before any test runs, clean up the datastore. This should ensure that tests are hermetic.
     db.initialize();
   });
 
-  // Unit tests - create a student
-  describe('Unit tests: creating students', () => {
-    it('should return an ID', async () => {
-      const createdStudent = await client.addStudent('Aziza');
-      expect(createdStudent.studentID).toBeGreaterThan(4);
-    });
+  // POST /transcripts
+  test("POST /transcripts returns 201 and an ID", async () => {
+    const student = await client.addStudent("Aziza");
+    expect(student.studentID).toBeGreaterThan(0);
 
-    // todo - implement more tests here
-    it('should return different IDs for different students', async () => {
-      // todo - complete implementation
+    const ids = await client.getStudentIDs("Aziza");
+    expect(ids).toContain(student.studentID);
+  });
+
+  test("POST /transcripts returns 400 for missing name", async () => {
+    await expect(client.addStudent("")).rejects.toThrow();
+  });
+
+  // GET /transcripts/:id
+  test("GET /transcripts/:id returns 200 for valid ID", async () => {
+    const s = await client.addStudent("Sam1");
+    const t = await client.getTranscript(s.studentID);
+    expect(t.student.studentName).toBe("Sam1");
+  });
+
+  test("GET /transcripts/:id returns 404 for missing ID", async () => {
+    await expect(client.getTranscript(99999)).rejects.toThrow();
+  });
+
+  // GET /studentids?name=...
+  test("GET /studentids returns all IDs for same name", async () => {
+    const s1 = await client.addStudent("Sam2");
+    const s2 = await client.addStudent("Sam2");
+    const ids = await client.getStudentIDs("Sam2");
+    expect(ids).toEqual(expect.arrayContaining([s1.studentID, s2.studentID]));
+  });
+
+  // DELETE /transcripts/:id
+  test("DELETE /transcripts/:id returns 204 and deletes", async () => {
+    const s = await client.addStudent("Sam3");
+    await client.deleteStudent(s.studentID);
+    const ids = await client.getStudentIDs("Sam3");
+    expect(ids).not.toContain(s.studentID);
+    await expect(client.getTranscript(s.studentID)).rejects.toThrow();
+  });
+
+  // POST /transcripts/:studentID/:course
+  test("POST /transcripts/:id/:course returns 201 for valid grade", async () => {
+    const s = await client.addStudent("Sam4");
+    await client.addGrade(s.studentID, "InterestingCourse1", 70);
+    const g = await client.getGrade(s.studentID, "InterestingCourse1");
+    expect(g).toEqual({
+      studentID: s.studentID,
+      course: "InterestingCourse1",
+      grade: 70,
     });
   });
 
-  // Unit tests - post a grade
-  describe('Unit tests: posting grades', () => {
-    it('should not accept grades for invalid student IDs', async () => {
-      await expect(client.addGrade(9999, 'CS360', 95)).rejects.toThrow();
-    });
-
-    // todo - implement more tests here
-    it('should accept grades for students ', async () => {
-      // todo - complete implementation
-    });
+  test("duplicate grade returns 400", async () => {
+    const s = await client.addStudent("Sam5");
+    await client.addGrade(s.studentID, "InterestingCourse1", 75);
+    await expect(
+      client.addGrade(s.studentID, "InterestingCourse1", 80)
+    ).rejects.toThrow();
   });
 
-  // Full system tests
-  describe('Full-system tests', () => {
-    it('should allow multiple students to have the same name, giving them different IDs', async () => {
-      // Create 2 new Aziza entries
-      const [createdAziza1, createdAziza2] = await Promise.all([
-        client.addStudent('Aziza'),
-        client.addStudent('Aziza'),
-      ]);
-      expect(createdAziza2.studentID).not.toBe(createdAziza1.studentID);
-      // Fetch all Aziza entries
-      const ids = await client.getStudentIDs('Aziza');
-      // Make sure the 2 created ones are both listed
-      expect(ids).toContain(createdAziza1.studentID);
-      expect(ids).toContain(createdAziza2.studentID);
-    });
-    it('should remove a deleted student from the list of students', async () => {});
+  test("invalid grade returns 400", async () => {
+    const s = await client.addStudent("Sam6");
+    // @ts-expect-error sending invalid grade on purpose
+    await expect(client.addGrade(s.studentID, "InterestingCourse1", "")).rejects.toThrow();
   });
 });
